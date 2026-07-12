@@ -1,0 +1,4 @@
+run
+*.o
+*.swp
+compile_commands.json
