@@ -1,0 +1,10 @@
+IndentWidth: 2
+UseTab: Never
+ColumnLimit: 0
+AccessModifierOffset: 0
+AlignConsecutiveAssignments: true
+DerivePointerAlignment: false
+PointerAlignment: Left
+ReferenceAlignment: Left
+SeparateDefinitionBlocks: Always
+InsertBraces: true

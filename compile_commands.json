@@ -1,0 +1,17 @@
+[
+  {
+    "arguments": [
+      "/usr/local/bin/g++",
+      "-std=c++17",
+      "-O3",
+      "-Iinclude",
+      "-c",
+      "-o",
+      "obj/main.o",
+      "src/main.cpp"
+    ],
+    "directory": "/home/akutagawa/code/test/vtu_bezier",
+    "file": "/home/akutagawa/code/test/vtu_bezier/src/main.cpp",
+    "output": "/home/akutagawa/code/test/vtu_bezier/obj/main.o"
+  }
+]
