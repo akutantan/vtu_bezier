@@ -1,12 +1,13 @@
 #pragma once
 
 #include <cstddef>
+#include <cstdint>
 #include <cstdlib>
 #include <filesystem>
+#include <fstream>
 #include <iomanip>
 #include <ios>
 #include <iostream>
-#include <fstream>
 #include <sstream>
 #include <vector>
 
@@ -14,22 +15,8 @@ namespace vtu {
 namespace fs = std::filesystem;
 
 enum class Format { ASCII,
-                    Binary,
                     Appended,
                     Unknown };
-
-inline std::string to_string(Format format) {
-  if (format == Format::ASCII) {
-    return "ascii";
-  }
-  if (format == Format::Binary) {
-    return "binary";
-  }
-  if (format == Format::Appended) {
-    return "appended";
-  }
-  return "unknown";
-}
 
 enum class TopologyType : uint8_t {
   BezierCurve         = 75,
@@ -60,21 +47,20 @@ class Writer {
   void set_geometry(const double* pos, size_t num_points) {
     m_num_points = num_points;
     m_points_ss << "\t\t<Points>\n";
-    m_points_ss << "\t\t\t<DataArray type=\"Float64\" Name=\"Points\" NumberOfComponents=\"3\" format=\""
-                << to_string(m_format) << "\">\n";
     if (m_format == Format::ASCII) {
+      m_points_ss << "\t\t\t<DataArray type=\"Float64\" Name=\"Points\" NumberOfComponents=\"3\" format=\"ascii\">\n";
       for (size_t i = 0; i < num_points; i++) {
         m_points_ss << "\t\t\t\t"
                     << pos[i * 3 + 0] << " "
                     << pos[i * 3 + 1] << " "
                     << pos[i * 3 + 2] << "\n";
       }
-    } else if (m_format == Format::Binary) {
-      std::cout << "Binary format is not supported yet." << std::endl;
+      m_points_ss << "\t\t\t</DataArray>\n";
     } else if (m_format == Format::Appended) {
-      std::cout << "Appended format is not supported yet." << std::endl;
+      m_points_ss << "\t\t\t<DataArray type=\"Float64\" Name=\"Points\" NumberOfComponents=\"3\" format=\"appended\" offset=\"" << m_offset << "\"/>\n";
+      std::vector<double> temp_pos(pos, pos + num_points * 3);
+      append_binary_data(temp_pos);
     }
-    m_points_ss << "\t\t\t</DataArray>\n";
     m_points_ss << "\t\t</Points>\n";
   };
 
@@ -97,49 +83,79 @@ class Writer {
     }
     std::vector<int> map = get_vtk_cell_map(type, p);
 
-    m_cells_ss << "\t\t<Cells>\n";
+    std::vector<int64_t> conn_vec;
+    std::vector<int64_t> offsets_vec;
+    std::vector<uint8_t> types_vec;
+    std::vector<int32_t> degree_vec;
 
-    m_cells_ss << "\t\t\t<DataArray type=\"Int64\" Name=\"connectivity\" format=\""
-               << to_string(m_format) << "\">\n";
     for (size_t i = 0; i < num_cells; i++) {
-      m_cells_ss << "\t\t\t\t";
       size_t offset = i * neb;
       for (size_t j = 0; j < neb; j++) {
-        m_cells_ss << (offset + map[j]) << " ";
+        conn_vec.push_back(offset + map[j]);
       }
-      m_cells_ss << "\n";
+      offsets_vec.push_back((i + 1) * neb);
+      types_vec.push_back(static_cast<uint8_t>(type));
+      degree_vec.push_back((npd > 0) ? p[0] : 0);
+      degree_vec.push_back((npd > 1) ? p[1] : 0);
+      degree_vec.push_back((npd > 2) ? p[2] : 0);
     }
-    m_cells_ss << "\t\t\t</DataArray>\n";
 
-    m_cells_ss << "\t\t\t<DataArray type=\"Int64\" Name=\"offsets\" format=\""
-               << to_string(m_format) << "\">\n";
-    for (size_t i = 0; i < num_cells; i++) {
-      m_cells_ss << "\t\t\t\t" << (i + 1) * neb << "\n";
-    }
-    m_cells_ss << "\t\t\t</DataArray>\n";
+    m_cells_ss << "\t\t<Cells>\n";
+    if (m_format == Format::ASCII) {
+      // connectivity
+      m_cells_ss << "\t\t\t<DataArray type=\"Int64\" Name=\"connectivity\" format=\"ascii\">\n";
+      for (size_t i = 0; i < num_cells; i++) {
+        m_cells_ss << "\t\t\t\t";
+        for (size_t j = 0; j < neb; j++) {
+          m_cells_ss << conn_vec[i * neb + j] << " ";
+        }
+        m_cells_ss << "\n";
+      }
+      m_cells_ss << "\t\t\t</DataArray>\n";
 
-    m_cells_ss << "\t\t\t<DataArray type=\"UInt8\" Name=\"types\" format=\""
-               << to_string(m_format) << "\">\n";
-    for (size_t i = 0; i < num_cells; i++) {
-      m_cells_ss << "\t\t\t\t" << static_cast<int>(type) << "\n";
+      // offsets
+      m_cells_ss << "\t\t\t<DataArray type=\"Int64\" Name=\"offsets\" format=\"ascii\">\n";
+      for (size_t i = 0; i < num_cells; i++) {
+        m_cells_ss << "\t\t\t\t" << offsets_vec[i] << "\n";
+      }
+      m_cells_ss << "\t\t\t</DataArray>\n";
+
+      // types
+      m_cells_ss << "\t\t\t<DataArray type=\"UInt8\" Name=\"types\" format=\"ascii\">\n";
+      for (size_t i = 0; i < num_cells; i++) {
+        m_cells_ss << "\t\t\t\t" << static_cast<int>(types_vec[i]) << "\n";
+      }
+      m_cells_ss << "\t\t\t</DataArray>\n";
+
+      // HigherOrderDegrees (CellData)
+      m_cell_data_ss << "\t\t\t<DataArray type=\"Int32\" Name=\"HigherOrderDegrees\" NumberOfComponents=\"3\" format=\"ascii\">\n";
+      for (size_t i = 0; i < num_cells; i++) {
+        m_cell_data_ss << "\t\t\t\t"
+                       << degree_vec[i * 3 + 0] << " "
+                       << degree_vec[i * 3 + 1] << " "
+                       << degree_vec[i * 3 + 2] << "\n";
+      }
+      m_cell_data_ss << "\t\t\t</DataArray>\n";
+
+    } else if (m_format == Format::Appended) {
+      // connectivity
+      m_cells_ss << "\t\t\t<DataArray type=\"Int64\" Name=\"connectivity\" format=\"appended\" offset=\"" << m_offset << "\" />\n";
+      append_binary_data(conn_vec);
+
+      // offsets
+      m_cells_ss << "\t\t\t<DataArray type=\"Int64\" Name=\"offsets\" format=\"appended\" offset=\"" << m_offset << "\" />\n";
+      append_binary_data(offsets_vec);
+
+      // types
+      m_cells_ss << "\t\t\t<DataArray type=\"UInt8\" Name=\"types\" format=\"appended\" offset=\"" << m_offset << "\" />\n";
+      append_binary_data(types_vec);
+
+      // HigherOrderDegrees (CellData)
+      m_cell_data_ss << "\t\t\t<DataArray type=\"Int32\" Name=\"HigherOrderDegrees\" NumberOfComponents=\"3\" format=\"appended\" offset=\"" << m_offset << "\" />\n";
+      append_binary_data(degree_vec);
     }
-    m_cells_ss << "\t\t\t</DataArray>\n";
+
     m_cells_ss << "\t\t</Cells>\n";
-
-    std::vector<int> degree(3, 0);
-    degree[0] = (npd > 0) ? p[0] : 0;
-    degree[1] = (npd > 1) ? p[1] : 0;
-    degree[2] = (npd > 2) ? p[2] : 0;
-
-    m_cell_data_ss << "\t\t\t<DataArray type=\"Int32\" Name=\"HigherOrderDegrees\" NumberOfComponents=\"3\" format=\""
-                   << to_string(m_format) << "\">\n";
-    for (size_t i = 0; i < num_cells; i++) {
-      m_cell_data_ss << "\t\t\t\t"
-                     << degree[0] << " "
-                     << degree[1] << " "
-                     << degree[2] << "\n";
-    }
-    m_cell_data_ss << "\t\t\t</DataArray>\n";
   };
 
   void add_attribute(const double* data, size_t num_items,
@@ -162,11 +178,10 @@ class Writer {
       exit(EXIT_FAILURE);
     }
 
-    *target_ss << "\t\t\t<DataArray type=\"Float64\" Name=\"" << name
-               << "\" NumberOfComponents=\"" << num_comps
-               << "\" format=\"" << to_string(m_format) << "\">\n";
-
     if (m_format == Format::ASCII) {
+      *target_ss << "\t\t\t<DataArray type=\"Float64\" Name=\"" << name
+                 << "\" NumberOfComponents=\"" << num_comps
+                 << "\" format=\"ascii" << "\">\n";
       *target_ss << std::scientific << std::setprecision(15);
       for (size_t i = 0; i < num_items; i++) {
         *target_ss << "\t\t\t\t";
@@ -175,35 +190,53 @@ class Writer {
         }
         *target_ss << "\n";
       }
-    } else if (m_format == Format::Binary) {
-      std::cout << "Binary format is not supported yet." << std::endl;
+      *target_ss << "\t\t\t</DataArray>\n";
     } else if (m_format == Format::Appended) {
-      std::cout << "Appended format is not supported yet." << std::endl;
+      *target_ss << "\t\t\t<DataArray type=\"Float64\" Name=\"" << name
+                 << "\" NumberOfComponents=\"" << num_comps
+                 << "\" format=\"appended\" offset=\"" << m_offset << "\" />\n";
+
+      std::vector<double> temp_data(data, data + num_items * num_comps);
+      append_binary_data(temp_data);
     }
-    *target_ss << "\t\t\t</DataArray>\n";
   };
 
   void write() {
-    std::ofstream ofs(m_filename);
+    std::ofstream ofs(m_filename, std::ios::binary);
     if (!ofs.is_open()) {
       std::cerr << "Failed to open file: " << m_filename << std::endl;
       exit(EXIT_FAILURE);
     }
+
     ofs << "<?xml version=\"1.0\"?>\n";
-    ofs << "<VTKFile type=\"UnstructuredGrid\" version=\"1.0\" byte_order=\"LittleEndian\">\n";
+    ofs << "<VTKFile type=\"UnstructuredGrid\" version=\"1.0\" byte_order=\"LittleEndian\" header_type=\"UInt32\">\n";
     ofs << "\t<UnstructuredGrid>\n";
     ofs << "\t\t<Piece NumberOfPoints=\"" << m_num_points
         << "\" NumberOfCells=\"" << m_num_cells << "\">\n";
+
     ofs << m_points_ss.str();
     ofs << m_cells_ss.str();
+
     ofs << "\t\t<PointData>\n";
     ofs << m_point_data_ss.str();
     ofs << "\t\t</PointData>\n";
+
     ofs << "\t\t<CellData>\n";
     ofs << m_cell_data_ss.str();
     ofs << "\t\t</CellData>\n";
+
     ofs << "\t\t</Piece>\n";
     ofs << "\t</UnstructuredGrid>\n";
+
+    if (m_format == Format::Appended) {
+      ofs << "\t<AppendedData encoding=\"raw\">\n";
+      ofs << "_";
+
+      ofs.write(m_appended_data.data(), m_appended_data.size());
+
+      ofs << "\n\t</AppendedData>\n";
+    }
+
     ofs << "</VTKFile>\n";
     ofs.close();
   };
@@ -218,6 +251,9 @@ class Writer {
   std::stringstream m_cells_ss;
   std::stringstream m_point_data_ss;
   std::stringstream m_cell_data_ss;
+
+  std::vector<char> m_appended_data;
+  size_t m_offset = 0;
 
   std::vector<int> get_vtk_cell_map(TopologyType type, const int* p) {
     std::vector<int> map;
@@ -363,5 +399,68 @@ class Writer {
     }
     return map;
   }
+
+  template <typename T>
+  void append_binary_data(const std::vector<T>& data) {
+    uint32_t num_bytes   = data.size() * sizeof(T);
+    const char* size_ptr = reinterpret_cast<const char*>(&num_bytes);
+    m_appended_data.insert(m_appended_data.end(), size_ptr, size_ptr + sizeof(uint32_t));
+
+    const char* data_ptr = reinterpret_cast<const char*>(data.data());
+    m_appended_data.insert(m_appended_data.end(), data_ptr, data_ptr + num_bytes);
+
+    m_offset += sizeof(uint32_t) + num_bytes;
+  }
+};
+
+class PvdWriter {
+  public:
+  PvdWriter(const fs::path& pvd_filepath) : m_pvd_filepath(pvd_filepath) {}
+
+  void write(double current_time, const std::string& vtu_filename) {
+    std::vector<std::string> history;
+
+    if (fs::exists(m_pvd_filepath)) {
+      std::ifstream ifs(m_pvd_filepath);
+      std::string line;
+      while (std::getline(ifs, line)) {
+        if (line.find("<DataSet") != std::string::npos) {
+          auto start = line.find("timestep=\"");
+          if (start != std::string::npos) {
+            start += 10;
+            auto end = line.find("\"", start);
+            if (end != std::string::npos) {
+              double t = std::stod(line.substr(start, end - start));
+              if (t < current_time) {
+                history.push_back(line);
+              }
+            }
+          }
+        }
+      }
+    }
+
+    std::ofstream ofs(m_pvd_filepath);
+    if (!ofs.is_open()) {
+      return;
+    }
+
+    ofs << "<?xml version=\"1.0\"?>\n";
+    ofs << "<VTKFile type=\"Collection\" version=\"0.1\" byte_order=\"LittleEndian\">\n";
+    ofs << "\t<Collection>\n";
+
+    for (const auto& past_line : history) {
+      ofs << past_line << "\n";
+    }
+
+    ofs << "\t\t<DataSet timestep=\"" << current_time
+        << "\" group=\"\" part=\"0\" file=\"" << vtu_filename << "\"/>\n";
+
+    ofs << "\t</Collection>\n";
+    ofs << "</VTKFile>\n";
+  }
+
+  private:
+  fs::path m_pvd_filepath;
 };
 } // namespace vtu
