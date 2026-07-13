@@ -1,5 +1,6 @@
 run
 *.o
+*.d
 *.swp
 .cache
 compile_commands.json

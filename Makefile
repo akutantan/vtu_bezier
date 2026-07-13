@@ -3,11 +3,13 @@ GCC := g++
 INC_DIR := include
 SRC_DIR := src
 OBJ_DIR := obj
-FLAGS := -std=c++17 -O3 -I$(INC_DIR)
+FLAGS := -std=c++17 -O3 -I$(INC_DIR) -MMD -MP
 
 SRCS := $(wildcard $(SRC_DIR)/*.cpp)
 OBJS := $(notdir $(SRCS:.cpp=.o))
 OBJSDIR := $(addprefix $(OBJ_DIR)/,$(OBJS))
+
+DEPS := $(OBJSDIR:.o=.d)
 
 all: $(PROG)
 
@@ -28,3 +30,5 @@ clean-results:
 	rm -rf results
 
 clean-all: clean clean-results
+
+-include $(DEPS)
