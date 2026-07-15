@@ -9,6 +9,7 @@
 #include <ios>
 #include <iostream>
 #include <sstream>
+#include <type_traits>
 #include <vector>
 
 namespace vtu {
@@ -19,6 +20,7 @@ enum class Format { ASCII,
                     Unknown };
 
 enum class TopologyType : uint8_t {
+  Vertex              = 1,
   BezierCurve         = 75,
   BezierQuadrilateral = 77,
   BezierHexahedron    = 79,
@@ -37,6 +39,16 @@ enum class AttributeType : uint8_t {
 enum class AttributeCenter { Node,
                              Cell,
                              Unknown };
+
+inline std::string to_string(Format format) {
+  if (format == Format::ASCII) {
+    return "ASCII";
+  }
+  if (format == Format::Appended) {
+    return "Appended";
+  }
+  return "Unknown";
+}
 
 class Writer {
   public:
@@ -66,8 +78,11 @@ class Writer {
 
   void set_topology(size_t num_cells, TopologyType type, const int* p) {
     m_num_cells = num_cells;
-    int npd;
-    if (type == TopologyType::BezierCurve) {
+
+    int npd = -1;
+    if (type == TopologyType::Vertex) {
+      npd = 0;
+    } else if (type == TopologyType::BezierCurve) {
       npd = 1;
     } else if (type == TopologyType::BezierQuadrilateral) {
       npd = 2;
@@ -156,6 +171,76 @@ class Writer {
     }
 
     m_cells_ss << "\t\t</Cells>\n";
+  };
+
+  template <typename T>
+  std::string get_vtk_type_string() {
+    if constexpr (std::is_same_v<T, double>) {
+      return "Float64";
+    }
+    if constexpr (std::is_same_v<T, float>) {
+      return "Float32";
+    }
+    if constexpr (std::is_same_v<T, int32_t> || std::is_same_v<T, int>) {
+      return "Int32";
+    }
+    if constexpr (std::is_same_v<T, int64_t>) {
+      return "Int64";
+    }
+    if constexpr (std::is_same_v<T, uint8_t>) {
+      return "UInt8";
+    }
+    return "Float64";
+  }
+
+  template <typename T>
+  void add_attribute(const T* data, size_t num_items,
+                     AttributeType type, AttributeCenter center, const std::string& name) {
+    std::stringstream* target_ss = nullptr;
+    if (center == AttributeCenter::Node) {
+      target_ss = &m_point_data_ss;
+    } else if (center == AttributeCenter::Cell) {
+      target_ss = &m_cell_data_ss;
+    } else {
+      std::cerr << "Unknown attribute center." << std::endl;
+      exit(EXIT_FAILURE);
+    }
+
+    int num_comps = static_cast<int>(type);
+    if (type == AttributeType::Matrix) {
+      num_comps = 9;
+    } else if (num_comps == 0) {
+      std::cerr << "Unknown attribute type." << std::endl;
+      exit(EXIT_FAILURE);
+    }
+
+    std::string vtk_type = get_vtk_type_string<T>();
+
+    if (m_format == Format::ASCII) {
+      *target_ss << "\t\t\t<DataArray type=\"" << vtk_type << "\" Name=\"" << name
+                 << "\" NumberOfComponents=\"" << num_comps
+                 << "\" format=\"ascii\">\n";
+
+      if constexpr (std::is_floating_point_v<T>) {
+        *target_ss << std::scientific << std::setprecision(15);
+      }
+
+      for (size_t i = 0; i < num_items; i++) {
+        *target_ss << "\t\t\t\t";
+        for (int j = 0; j < num_comps; j++) {
+          *target_ss << data[i * num_comps + j] << " ";
+        }
+        *target_ss << "\n";
+      }
+      *target_ss << "\t\t\t</DataArray>\n";
+    } else if (m_format == Format::Appended) {
+      *target_ss << "\t\t\t<DataArray type=\"" << vtk_type << "\" Name=\"" << name
+                 << "\" NumberOfComponents=\"" << num_comps
+                 << "\" format=\"appended\" offset=\"" << m_offset << "\" />\n";
+
+      std::vector<T> temp_data(data, data + num_items * num_comps);
+      append_binary_data(temp_data);
+    }
   };
 
   void add_attribute(const double* data, size_t num_items,
@@ -257,7 +342,10 @@ class Writer {
 
   std::vector<int> get_vtk_cell_map(TopologyType type, const int* p) {
     std::vector<int> map;
-    if (type == TopologyType::BezierCurve) {
+    if (type == TopologyType::Vertex) {
+      map.resize(1);
+      map[0] = 0;
+    } else if (type == TopologyType::BezierCurve) {
       int p1 = p[0];
       map.resize(p1 + 1);
       map[0] = 0;
@@ -417,7 +505,7 @@ class PvdWriter {
   public:
   PvdWriter(const fs::path& pvd_filepath) : m_pvd_filepath(pvd_filepath) {}
 
-  void write(double current_time, const std::string& vtu_filename) {
+  void write(double current_time, const int part, const std::string& vtu_filename) {
     std::vector<std::string> history;
 
     if (fs::exists(m_pvd_filepath)) {
@@ -425,16 +513,30 @@ class PvdWriter {
       std::string line;
       while (std::getline(ifs, line)) {
         if (line.find("<DataSet") != std::string::npos) {
-          auto start = line.find("timestep=\"");
-          if (start != std::string::npos) {
-            start += 10;
-            auto end = line.find("\"", start);
-            if (end != std::string::npos) {
-              double t = std::stod(line.substr(start, end - start));
-              if (t < current_time) {
-                history.push_back(line);
-              }
+
+          double t        = -1.0;
+          int parsed_part = -1;
+
+          auto t_start = line.find("timestep=\"");
+          if (t_start != std::string::npos) {
+            t_start += 10;
+            auto t_end = line.find("\"", t_start);
+            if (t_end != std::string::npos) {
+              t = std::stod(line.substr(t_start, t_end - t_start));
             }
+          }
+
+          auto p_start = line.find("part=\"");
+          if (p_start != std::string::npos) {
+            p_start += 6;
+            auto p_end = line.find("\"", p_start);
+            if (p_end != std::string::npos) {
+              parsed_part = std::stoi(line.substr(p_start, p_end - p_start));
+            }
+          }
+
+          if (t < current_time || (t == current_time && parsed_part != part)) {
+            history.push_back(line);
           }
         }
       }
@@ -454,7 +556,7 @@ class PvdWriter {
     }
 
     ofs << "\t\t<DataSet timestep=\"" << current_time
-        << "\" group=\"\" part=\"0\" file=\"" << vtu_filename << "\"/>\n";
+        << "\" group=\"\" part=\"" << part << "\" file=\"" << vtu_filename << "\"/>\n";
 
     ofs << "\t</Collection>\n";
     ofs << "</VTKFile>\n";
@@ -463,4 +565,5 @@ class PvdWriter {
   private:
   fs::path m_pvd_filepath;
 };
+
 } // namespace vtu

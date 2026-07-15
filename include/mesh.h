@@ -1,7 +1,7 @@
 #pragma once
 #include <vector>
 
-#include "vtu_bezier.h"
+#include "vtu.h"
 #include "vec3.h"
 
 using Double3 = vec3<double>;
